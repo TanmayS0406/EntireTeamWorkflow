@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Etw.Integrations</RootNamespace>
+    <AssemblyName>Etw.Integrations</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Etw.Hosting\Etw.Hosting.csproj" />
+  </ItemGroup>
+</Project>

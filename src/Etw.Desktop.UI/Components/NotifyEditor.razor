@@ -1,0 +1,248 @@
+@using Etw.Shared.Auth
+@inherits StateComponent
+
+@if (Channel == NotifyChannel.Slack)
+{
+    <div class="field-group">
+        <div class="status-line">
+            <span class="dot @(Slack.Connected ? "ok" : "off")"></span>
+            @if (Slack.Connected)
+            {
+                <span>Connected@(string.IsNullOrEmpty(Slack.Account) ? "" : " as " + Slack.Account)@(string.IsNullOrEmpty(Slack.Workspace) ? "" : " · " + Slack.Workspace)</span>
+            }
+            else
+            {
+                <span>Not connected</span>
+            }
+        </div>
+
+        <div class="btn-row">
+            <button class="btn primary" disabled="@State.SlackBusy" @onclick="SlackSignIn">
+                @if (State.SlackBusy) { <span class="spinner small"></span> }
+                @(Slack.Connected ? "Add another workspace" : "Sign in with Slack")
+            </button>
+            @if (Slack.Connected)
+            {
+                <button class="btn" @onclick="() => State.DisconnectSlackAsync()">Disconnect @(Slack.Workspace ?? "workspace")</button>
+            }
+        </div>
+
+        @if (Slack.Workspaces.Count > 0)
+        {
+            <label>Workspace
+                <select value="@Slack.ActiveWorkspaceId" @onchange="OnWorkspace">
+                    @foreach (var w in Slack.Workspaces) { <option value="@w.Id" selected="@(w.Id == Slack.ActiveWorkspaceId)">@w.Name@(string.IsNullOrEmpty(w.Account) ? "" : " (" + w.Account + ")")</option> }
+                </select>
+            </label>
+        }
+
+        @if (_setup && !State.SlackAvailable)
+        {
+            <p class="help"><b>One-time setup.</b> Slack needs this app registered once. After that, signing in is just the button.</p>
+            <ol class="steps">
+                <li><button class="btn small" @onclick="State.OpenSlackAppSetup">Create the Slack app</button> Slack opens with everything filled in; press <b>Create App</b>.</li>
+                <li>On the app's <b>Basic Information</b> page, copy the <b>Client ID</b> and paste it here:
+                    <input type="text" autocomplete="off" spellcheck="false" placeholder="1234567890.1234567890123" @bind="_slackClientId" @bind:event="oninput" />
+                </li>
+            </ol>
+            <div class="btn-row">
+                <button class="btn primary small" disabled="@string.IsNullOrWhiteSpace(_slackClientId)" @onclick="SaveSlackAppAndSignIn">Save and sign in</button>
+            </div>
+        }
+        else if (State.SlackBusy)
+        {
+            <p class="help">Finish signing in in the browser window that just opened.</p>
+        }
+        else if (!Slack.Connected)
+        {
+            <p class="help">Opens your browser to sign in to your Slack workspace.@(State.SlackAvailable ? "" : " The first time, Slack needs a one-time setup that this button walks you through.")</p>
+        }
+    </div>
+}
+else
+{
+    <EntraCard Target="EntraTarget.Teams" Status="Teams.Connection" />
+}
+
+@if (Connected)
+{
+    <div class="field-group">
+        @if (_error is not null) { <p class="error-text">@_error</p> }
+
+        @if (Channel == NotifyChannel.Teams)
+        {
+            <label>Team
+                <select value="@Teams.TeamId" @onchange="OnTeam">
+                    <option value="">Choose&hellip;</option>
+                    @foreach (var t in _teams) { <option value="@t.Id" selected="@(t.Id == Teams.TeamId)">@t.Name</option> }
+                </select>
+            </label>
+        }
+
+        <label>Channel
+            <select value="@SelectedChannelId" @onchange="OnChannel" disabled="@(Channel == NotifyChannel.Teams && string.IsNullOrEmpty(Teams.TeamId))">
+                <option value="">Choose&hellip;</option>
+                @foreach (var c in _channels) { <option value="@c.Id" selected="@(c.Id == SelectedChannelId)">@c.Name</option> }
+            </select>
+        </label>
+
+        <div class="btn-row">
+            <button class="btn small" disabled="@_loading" @onclick="Reload">
+                @if (_loading) { <span class="spinner small"></span> }
+                Refresh list
+            </button>
+            @if (Ready)
+            {
+                <button class="btn small" @onclick="() => State.TestNotifyAsync(Channel)">Send test message</button>
+            }
+        </div>
+
+        <p class="help">
+            @(Channel == NotifyChannel.Slack ? "Messages are posted as you, to the channel you choose (you must be a member of it)." : "Messages are posted as you, to the channel you choose.")
+            The same connection is used by every project. When this step is reached, the run's progress so far is posted; if a run fails, the failure is posted too.
+        </p>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public NotifyChannel Channel { get; set; }
+
+    private List<NotifyChoiceDto> _teams = [];
+    private List<NotifyChoiceDto> _channels = [];
+    private string? _error;
+    private bool _loading, _loaded, _setup;
+    private string _slackClientId = "";
+
+    /// <summary>Signs in; the very first time (no Slack app yet) it shows the one-time setup instead.</summary>
+    private async Task SlackSignIn()
+    {
+        if (State.SlackAvailable) await State.ConnectSlackAsync();
+        else _setup = true;
+    }
+
+    private async Task SaveSlackAppAndSignIn()
+    {
+        var clientId = _slackClientId.Trim();
+        if (!SlackOAuth.IsValidClientId(clientId))
+        {
+            State.ShowToast("That does not look like a Slack Client ID. It is two numbers joined by a dot, like 1234567890.1234567890123.", isError: true);
+            return;
+        }
+        if (await State.SaveSlackAppAsync(clientId))
+        {
+            _setup = false;
+            await State.ConnectSlackAsync();
+        }
+    }
+
+    private SlackStatusDto Slack => State.Integrations.Notifications.Slack;
+    private TeamsStatusDto Teams => State.Integrations.Notifications.Teams;
+
+    private bool Connected => Channel == NotifyChannel.Slack ? Slack.Connected : Teams.Connection.Connected;
+    private bool Ready => Channel == NotifyChannel.Slack ? Slack.ChannelId.Length > 0 : Teams.ChannelId.Length > 0;
+    private string SelectedChannelId => Channel == NotifyChannel.Slack ? Slack.ChannelId : Teams.ChannelId;
+
+    /// <summary>Once connected, fills the team and channel lists without the user asking for them.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!Connected)
+        {
+            _loaded = false;
+            return;
+        }
+        if (_loaded) return;
+
+        _loaded = true;
+        await Reload();
+    }
+
+    private async Task Reload()
+    {
+        _loading = true;
+        _error = null;
+        StateHasChanged();
+        try
+        {
+            if (Channel == NotifyChannel.Slack)
+            {
+                _channels = await State.SlackChannelsAsync();
+                AddSaved(_channels, Slack.ChannelId, Slack.ChannelName);
+            }
+            else
+            {
+                _teams = await State.TeamsListAsync();
+                AddSaved(_teams, Teams.TeamId, Teams.TeamName);
+                if (Teams.TeamId.Length > 0) await LoadTeamChannels(Teams.TeamId);
+            }
+        }
+        catch (GatewayException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>A saved choice that the account no longer lists stays visible, so the screen never silently shows "Choose".</summary>
+    private static void AddSaved(List<NotifyChoiceDto> list, string id, string name)
+    {
+        if (id.Length > 0 && !list.Any(x => x.Id == id)) list.Insert(0, new NotifyChoiceDto { Id = id, Name = name.Length > 0 ? name : id });
+    }
+
+    private async Task LoadTeamChannels(string teamId)
+    {
+        _channels = await State.TeamsChannelsAsync(teamId);
+        AddSaved(_channels, Teams.ChannelId, Teams.ChannelName);
+    }
+
+    private async Task OnTeam(ChangeEventArgs e)
+    {
+        var id = e.Value?.ToString() ?? "";
+        _channels = [];
+        _error = null;
+        if (id.Length == 0) return;
+        try
+        {
+            // Channels belong to one team: choosing another team clears the channel until a new one is picked.
+            if (id != Teams.TeamId)
+            {
+                var team = _teams.First(t => t.Id == id);
+                await State.SelectTeamsChannelAsync(team, new NotifyChoiceDto());
+            }
+            await LoadTeamChannels(id);
+        }
+        catch (GatewayException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    /// <summary>Switches the active Slack workspace and lists that workspace's channels.</summary>
+    private async Task OnWorkspace(ChangeEventArgs e)
+    {
+        var id = e.Value?.ToString() ?? "";
+        if (id.Length == 0 || id == Slack.ActiveWorkspaceId) return;
+
+        _channels = [];
+        if (await State.SelectSlackWorkspaceAsync(id)) await Reload();
+    }
+
+    private async Task OnChannel(ChangeEventArgs e)
+    {
+        var id = e.Value?.ToString() ?? "";
+        var channel = _channels.FirstOrDefault(c => c.Id == id);
+        if (channel is null) return;
+
+        if (Channel == NotifyChannel.Slack)
+        {
+            await State.SelectSlackChannelAsync(channel);
+        }
+        else if (_teams.FirstOrDefault(t => t.Id == Teams.TeamId) is { } team)
+        {
+            await State.SelectTeamsChannelAsync(team, channel);
+        }
+    }
+}

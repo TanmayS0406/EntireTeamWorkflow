@@ -1,0 +1,160 @@
+@inherits StateComponent
+@{ Seed(); }
+
+<div class="page">
+    <div class="page-head">
+        <div>
+            <h2>Connect</h2>
+            <p>Where your stories come from, where notifications go, and where the finished app can be deployed.</p>
+        </div>
+    </div>
+
+    <div class="cards">
+        <section class="card">
+            <header><NodeIcon Kind="NodeKind.Stories" Size="26" /><div><h3>Azure DevOps</h3><p>Sign in with OAuth and load the user stories and backlog of a project.</p></div></header>
+            <EntraCard Target="EntraTarget.AzureDevOps" Status="State.Integrations.AzureDevOps.Connection" />
+
+            @if (State.Integrations.AzureDevOps.Connection.Connected)
+            {
+                <div class="field-group">
+                    <h4>Backlog source</h4>
+                    @if (_error is not null) { <p class="error-text">@_error</p> }
+                    <div class="two-col">
+                        <label>Organization
+                            @if (_orgs.Count > 0)
+                            {
+                                <select value="@_org" @onchange="OnOrganization">
+                                    <option value="">Choose&hellip;</option>
+                                    @foreach (var o in _orgs) { <option value="@o" selected="@(o == _org)">@o</option> }
+                                </select>
+                            }
+                            else
+                            {
+                                <input type="text" placeholder="my-organization" @bind="_org" @bind:event="oninput" />
+                            }
+                        </label>
+                        <label>Project
+                            @if (_projects.Count > 0)
+                            {
+                                <select value="@_project" @onchange="OnProject">
+                                    <option value="">Choose&hellip;</option>
+                                    @foreach (var p in _projects) { <option value="@p.Name" selected="@(p.Name == _project)">@p.Name</option> }
+                                </select>
+                            }
+                            else
+                            {
+                                <input type="text" placeholder="My Project" @bind="_project" @bind:event="oninput" />
+                            }
+                        </label>
+                    </div>
+                    <div class="btn-row">
+                        <button class="btn small" disabled="@_loading" @onclick="LoadOrganizations">
+                            @if (_loading) { <span class="spinner small"></span> }
+                            Refresh from Azure DevOps
+                        </button>
+                        @if (_projects.Count == 0)
+                        {
+                            <button class="btn small" disabled="@(_loading || string.IsNullOrWhiteSpace(_org))" @onclick="LoadProjects">List projects</button>
+                            <button class="btn primary small" disabled="@(string.IsNullOrWhiteSpace(_org) || string.IsNullOrWhiteSpace(_project))" @onclick="SaveSelection">Use this project</button>
+                        }
+                    </div>
+                    <p class="help">Currently: @(string.IsNullOrEmpty(State.Integrations.AzureDevOps.Project) ? "nothing selected" : $"{State.Integrations.AzureDevOps.Organization} / {State.Integrations.AzureDevOps.Project}"). Then import from the <a href="javascript:void(0)" @onclick="() => State.Go(Tab.Backlog)">Backlog</a> tab — you can also write stories directly in the app, and push them to Azure DevOps when you create them.</p>
+                </div>
+            }
+        </section>
+
+        <section class="card">
+            <header><NodeIcon Kind="NodeKind.NotifySlack" Size="26" /><div><h3>Slack</h3><p>Get run notifications in a channel.</p></div></header>
+            <NotifyEditor Channel="NotifyChannel.Slack" />
+        </section>
+
+        <section class="card">
+            <header><NodeIcon Kind="NodeKind.NotifyTeams" Size="26" /><div><h3>Microsoft Teams</h3><p>Get run notifications in a Teams channel.</p></div></header>
+            <NotifyEditor Channel="NotifyChannel.Teams" />
+        </section>
+
+        <section class="card">
+            <header><NodeIcon Kind="NodeKind.DeployAzure" Size="26" /><div><h3>Azure</h3><p>Let the workflow deploy the finished app to Azure App Service.</p></div></header>
+            <EntraCard Target="EntraTarget.Azure" Status="State.AzureStatus" />
+            <p class="help">After connecting, add a <b>Deploy to Azure</b> step to your workflow (the <b>+</b> button on the Workflow tab) and choose the subscription, resource group and region there. Deployment is optional — leave the step out and nothing is ever deployed.</p>
+        </section>
+    </div>
+</div>
+
+@code {
+    private string _org = "", _project = "";
+    private List<string> _orgs = [];
+    private List<AdoProjectDto> _projects = [];
+    private string? _error;
+    private bool _loading, _seeded, _autoLoaded;
+
+    /// <summary>Fills the boxes from the saved selection as soon as the integrations status has arrived (it loads asynchronously).</summary>
+    private void Seed()
+    {
+        var saved = State.Integrations.AzureDevOps;
+        if (_seeded || (saved.Organization.Length == 0 && saved.Project.Length == 0)) return;
+        _seeded = true;
+        _org = saved.Organization;
+        _project = saved.Project;
+    }
+
+    /// <summary>Once connected, fills the organization and project lists without the user asking for them.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!State.Integrations.AzureDevOps.Connection.Connected)
+        {
+            _autoLoaded = false;
+            return;
+        }
+        if (_autoLoaded) return;
+
+        _autoLoaded = true;
+        await LoadOrganizations();
+        StateHasChanged();
+    }
+
+    private async Task LoadOrganizations()
+    {
+        await Load(async () =>
+        {
+            _orgs = await State.AdoOrganizationsAsync();
+            if (_orgs.Count == 1 && string.IsNullOrWhiteSpace(_org)) _org = _orgs[0];
+            if (_orgs.Count == 0) _error = "No organizations were returned for this account. Type the organization name by hand.";
+            else if (_org.Length > 0 && !_orgs.Contains(_org, StringComparer.OrdinalIgnoreCase)) _orgs.Insert(0, _org);
+            if (_org.Length > 0) await ListProjects();
+        });
+    }
+
+    private Task LoadProjects() => Load(ListProjects);
+
+    private async Task ListProjects()
+    {
+        _projects = await State.AdoProjectsAsync(_org.Trim());
+        if (_project.Length > 0 && !_projects.Any(p => p.Name == _project)) _projects.Insert(0, new AdoProjectDto { Name = _project });
+    }
+
+    private async Task OnOrganization(ChangeEventArgs e)
+    {
+        _org = e.Value?.ToString() ?? "";
+        _project = "";
+        _projects = [];
+        if (_org.Length > 0) await LoadProjects();
+    }
+
+    private async Task OnProject(ChangeEventArgs e)
+    {
+        _project = e.Value?.ToString() ?? "";
+        if (_project.Length > 0) await SaveSelection();
+    }
+
+    private async Task Load(Func<Task> action)
+    {
+        _loading = true;
+        _error = null;
+        try { await action(); }
+        catch (GatewayException ex) { _error = ex.Message; }
+        finally { _loading = false; }
+    }
+
+    private Task SaveSelection() => State.SelectAdoProjectAsync(_org.Trim(), _project.Trim());
+}

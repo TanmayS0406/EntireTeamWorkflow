@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Etw.Backend</RootNamespace>
+    <AssemblyName>Etw.Backend</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Yarp.ReverseProxy" />
+    <ProjectReference Include="..\Etw.Hosting\Etw.Hosting.csproj" />
+  </ItemGroup>
+</Project>

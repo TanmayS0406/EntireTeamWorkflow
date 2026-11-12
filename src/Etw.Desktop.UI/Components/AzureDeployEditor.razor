@@ -1,0 +1,148 @@
+﻿@inherits StateComponent
+
+@if (!State.AzureStatus.Connected)
+{
+    <div class="field-group">
+        <div class="status-line"><span class="dot off"></span><span>Not connected to Azure</span></div>
+        <p class="help">Connect your Azure account first. Then pick where to deploy.</p>
+        <button class="btn primary small" @onclick="() => State.Go(Tab.Integrations)">Connect to Azure&hellip;</button>
+    </div>
+}
+else
+{
+    <div class="field-group">
+        <div class="status-line"><span class="dot ok"></span><span>Connected as @(State.AzureStatus.Account ?? "your Azure account")</span></div>
+
+        @if (_error is not null)
+        {
+            <p class="error-text">@_error</p>
+        }
+
+        <label>Subscription
+            <select value="@Node.Get("subscriptionId")" @onchange="OnSubscription">
+                <option value="">Choose&hellip;</option>
+                @foreach (var s in _subscriptions)
+                {
+                    <option value="@s.Id" selected="@(s.Id == Node.Get("subscriptionId"))">@s.Name</option>
+                }
+            </select>
+        </label>
+
+        <label>Resource group
+            <select value="@(_newGroup ? NewGroup : Node.Get("resourceGroup"))" @onchange="OnResourceGroup" disabled="@(string.IsNullOrEmpty(Node.Get("subscriptionId")))">
+                <option value="">Choose&hellip;</option>
+                @foreach (var g in _groups)
+                {
+                    <option value="@g.Name" selected="@(!_newGroup && g.Name == Node.Get("resourceGroup"))">@g.Name (@g.Location)</option>
+                }
+                <option value="@NewGroup" selected="@_newGroup">+ Create a new resource group&hellip;</option>
+            </select>
+        </label>
+        @if (_newGroup)
+        {
+            <label>New resource group name <small>(created if it does not exist)</small>
+                <input type="text" value="@Node.Get("resourceGroup")" @onchange='e => Set("resourceGroup", e.Value?.ToString())' placeholder="my-app-rg" />
+            </label>
+        }
+
+        <label>Region
+            <select value="@Node.Get("location", "westeurope")" @onchange='e => Set("location", e.Value?.ToString())'>
+                @if (_locations.Count == 0)
+                {
+                    <option value="@Node.Get("location", "westeurope")">@Node.Get("location", "westeurope")</option>
+                }
+                @foreach (var l in _locations)
+                {
+                    <option value="@l.Name" selected="@(l.Name == Node.Get("location", "westeurope"))">@l.DisplayName</option>
+                }
+            </select>
+        </label>
+
+        <label>App name prefix <small>(globally unique; apps become <i>prefix</i>-backend and <i>prefix</i>-frontend)</small>
+            <input type="text" value="@Node.Get("appNamePrefix")" @onchange='e => Set("appNamePrefix", e.Value?.ToString()?.ToLowerInvariant())' placeholder="myteam-todo" maxlength="40" />
+        </label>
+
+        <label>Plan size
+            <select value="@Node.Get("planSku", "B1")" @onchange='e => Set("planSku", e.Value?.ToString())'>
+                @foreach (var sku in new[] { "B1", "B2", "B3", "S1", "S2", "S3", "P1v3", "P2v3", "P3v3" })
+                {
+                    <option value="@sku" selected="@(sku == Node.Get("planSku", "B1"))">@sku</option>
+                }
+            </select>
+        </label>
+        <p class="help">The deploy step first has a release agent produce production builds, then creates a Linux App Service plan and one web app per component and uploads them with your own Azure permissions. Costs for the plan apply to your subscription.</p>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public WorkflowNode Node { get; set; } = default!;
+
+    private List<AzureSubscriptionDto> _subscriptions = [];
+    private List<AzureResourceGroupDto> _groups = [];
+    private List<AzureLocationDto> _locations = [];
+    private string? _error;
+    private bool _newGroup;
+
+    private const string NewGroup = "__new__";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!State.AzureStatus.Connected) return;
+        await Load(async () =>
+        {
+            _subscriptions = await State.AzureSubscriptionsAsync();
+            await LoadSubscriptionDetails(Node.Get("subscriptionId"));
+        });
+    }
+
+    private async Task LoadSubscriptionDetails(string subscriptionId)
+    {
+        if (string.IsNullOrEmpty(subscriptionId)) return;
+        _groups = await State.AzureResourceGroupsAsync(subscriptionId);
+        _locations = await State.AzureLocationsAsync(subscriptionId);
+
+        // A saved name that is not in the account yet is a group the deployment will create.
+        var saved = Node.Get("resourceGroup");
+        _newGroup = saved.Length > 0 && !_groups.Any(g => string.Equals(g.Name, saved, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task OnSubscription(ChangeEventArgs e)
+    {
+        var id = e.Value?.ToString() ?? "";
+        Set("subscriptionId", id);
+
+        // Resource groups belong to one subscription, so the old choice no longer applies.
+        Set("resourceGroup", "");
+        _newGroup = false;
+        _groups = [];
+        await Load(() => LoadSubscriptionDetails(id));
+    }
+
+    private void OnResourceGroup(ChangeEventArgs e)
+    {
+        var value = e.Value?.ToString() ?? "";
+        _newGroup = value == NewGroup;
+        Set("resourceGroup", _newGroup ? "" : value);
+    }
+
+    private async Task Load(Func<Task> action)
+    {
+        try
+        {
+            _error = null;
+            await action();
+        }
+        catch (GatewayException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void Set(string key, string? value)
+    {
+        Node.Config[key] = (value ?? "").Trim();
+        State.QueueWorkflowSave();
+    }
+}
+
+

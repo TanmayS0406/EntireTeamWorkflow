@@ -1,0 +1,39 @@
+@inherits StateComponent
+
+@if (!State.Initialized)
+{
+    <div class="splash">
+        <div class="spinner"></div>
+        <p>Starting…</p>
+    </div>
+}
+else if (!State.ClaudeSignedIn)
+{
+    <LoginView />
+}
+else
+{
+    <Shell />
+}
+
+@code {
+    // Start-up (Claude sign-in check, backend calls) is deliberately not awaited from a lifecycle method: the Blazor host
+    // waits for every pending lifecycle task of the root component before it shows the page, so awaiting here would leave
+    // the window blank for as long as start-up takes.
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender && !State.Initialized) _ = StartAsync();
+    }
+
+    private async Task StartAsync()
+    {
+        try
+        {
+            await State.InitializeAsync();
+        }
+        catch (Exception ex)
+        {
+            State.ShowToast("Start-up failed: " + ex.Message, isError: true);
+        }
+    }
+}

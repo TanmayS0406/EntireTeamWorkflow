@@ -1,0 +1,329 @@
+@inherits StateComponent
+
+<div class="modal-backdrop" @onclick="Close">
+    <div class="modal" @onclick:stopPropagation>
+        <h2>@(Editing is null ? "New project" : "Repositories and workspace")</h2>
+
+        @if (Editing is null)
+        {
+            <div class="mode-switch">
+                <button class="mode-card @(!Existing ? "active" : "")" @onclick="() => SetMode(ProjectMode.NewApp)">
+                    <b>New app</b>
+                    <small>Design and build a new application from user stories, in an empty folder.</small>
+                </button>
+                <button class="mode-card @(Existing ? "active" : "")" @onclick="() => SetMode(ProjectMode.ExistingRepos)">
+                    <b>Existing repositories</b>
+                    <small>Implement stories inside your Azure DevOps repositories and deliver pull requests.</small>
+                </button>
+            </div>
+        }
+
+        <label>Name
+            <input type="text" @bind="Name" @bind:event="oninput" maxlength="80" placeholder="@(Existing ? "Payments platform" : "Todo app")" autofocus />
+        </label>
+
+        @if (!Existing)
+        {
+            <div class="two-col">
+                <label>Backend language
+                    <select @bind="_backend">
+                        @foreach (var b in LanguageCatalog.Backends) { <option value="@b.Id">@b.Name</option> }
+                    </select>
+                </label>
+                <label>UI framework
+                    <select @bind="_ui">
+                        @foreach (var u in LanguageCatalog.UiFrameworks) { <option value="@u.Id">@u.Name</option> }
+                    </select>
+                </label>
+            </div>
+        }
+        else if (!State.Integrations.AzureDevOps.Connection.Connected)
+        {
+            <div class="field-group">
+                <div class="status-line"><span class="dot off"></span><span>Azure DevOps is not connected</span></div>
+                <p class="help">Sign in to Azure DevOps first. Then you can pick the organization, project and repositories from lists.</p>
+                <div class="btn-row">
+                    <button class="btn primary small" @onclick="ConnectFirst">Connect Azure DevOps&hellip;</button>
+                </div>
+            </div>
+        }
+        else
+        {
+            @if (_error is not null) { <p class="error-text">@_error</p> }
+
+            <div class="two-col">
+                <label>Azure DevOps organization
+                    @if (_orgs.Count > 0)
+                    {
+                        <select value="@_org" @onchange="OnOrg">
+                            <option value="">Choose&hellip;</option>
+                            @foreach (var o in _orgs) { <option value="@o" selected="@(o == _org)">@o</option> }
+                        </select>
+                    }
+                    else
+                    {
+                        <input type="text" placeholder="my-organization" @bind="_org" @bind:event="oninput" />
+                    }
+                </label>
+                <label>Azure DevOps project
+                    @if (_adoProjects.Count > 0)
+                    {
+                        <select value="@_adoProject" @onchange="OnAdoProject">
+                            <option value="">Choose&hellip;</option>
+                            @foreach (var p in _adoProjects) { <option value="@p.Name" selected="@(p.Name == _adoProject)">@p.Name</option> }
+                        </select>
+                    }
+                    else
+                    {
+                        <input type="text" placeholder="My Project" @bind="_adoProject" @bind:event="oninput" />
+                    }
+                </label>
+            </div>
+
+            @if (_adoProjects.Count == 0 || _repos.Count == 0)
+            {
+                <div class="btn-row">
+                    <button class="btn small" disabled="@(_loading || string.IsNullOrWhiteSpace(_org) || string.IsNullOrWhiteSpace(_adoProject))" @onclick="LoadReposClick">
+                        @if (_loading) { <span class="spinner small"></span> }
+                        Load repositories
+                    </button>
+                </div>
+            }
+
+            @if (_repos.Count > 0)
+            {
+                <div class="repo-list" role="group" aria-label="Repositories">
+                    @foreach (var r in _repos)
+                    {
+                        <label class="repo-row @(r.DefaultBranch.Length == 0 ? "disabled" : "")">
+                            <input type="checkbox" disabled="@(r.DefaultBranch.Length == 0)" checked="@_selected.Contains(r.Id)" @onchange="e => Toggle(r, (bool)(e.Value ?? false))" />
+                            <b>@r.Name</b>
+                            <small>@(r.DefaultBranch.Length > 0 ? "branch " + r.DefaultBranch : "empty repository")</small>
+                        </label>
+                    }
+                </div>
+                <p class="help">@_selected.Count selected. Each repository is cloned into its own sub-folder of the workspace. Every run works on its own branch and opens a pull request per changed repository &mdash; the default branch is never touched directly.</p>
+            }
+        }
+
+        <label>@(Existing ? "Workspace folder (repositories are cloned into sub-folders)" : "Folder to build in")
+            <span class="folder-row">
+                <input type="text" @bind="_folder" @bind:event="oninput" placeholder="@(Existing ? "C:\\Work\\payments" : "C:\\Projects\\todo-app")" />
+                <button class="btn small" @onclick="Pick">Browse…</button>
+            </span>
+        </label>
+        @if (!Existing)
+        {
+            <p class="help">The agents create and edit files only inside this folder. It is created if it does not exist.</p>
+        }
+
+        <div class="modal-actions">
+            <button class="btn" @onclick="Close">Cancel</button>
+            <button class="btn primary" disabled="@(!CanSave)" @onclick="Save">@(Editing is null ? "Create project" : "Save")</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>When set, the dialog edits this existing-repositories project instead of creating a new one.</summary>
+    [Parameter] public ProjectDto? Editing { get; set; }
+
+    private ProjectMode _mode = ProjectMode.NewApp;
+    private string _name = "";
+    private string _folder = "";
+    private string _backend = LanguageCatalog.Backends[0].Id;
+    private string _ui = LanguageCatalog.UiFrameworks[0].Id;
+    private string _org = "";
+    private string _adoProject = "";
+    private string? _error;
+    private bool _folderEdited, _busy, _loading;
+
+    private List<string> _orgs = [];
+    private List<AdoProjectDto> _adoProjects = [];
+    private List<AdoRepoDto> _repos = [];
+    private readonly HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Folder names of repositories that were already saved, so editing keeps them.</summary>
+    private readonly Dictionary<string, string> _folders = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool Existing => _mode == ProjectMode.ExistingRepos;
+
+    private bool CanSave =>
+        !_busy && !string.IsNullOrWhiteSpace(_name) && !string.IsNullOrWhiteSpace(_folder)
+        && (!Existing || (!string.IsNullOrWhiteSpace(_org) && !string.IsNullOrWhiteSpace(_adoProject) && _selected.Count > 0));
+
+    private string Name
+    {
+        get => _name;
+        set
+        {
+            _name = value;
+            if (!_folderEdited && Editing is null) _folder = Suggest(value);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Editing is null) return;
+
+        _mode = Editing.Mode;
+        _name = Editing.Name;
+        _folder = Editing.TargetFolder;
+        _folderEdited = true;
+        _backend = Editing.BackendLanguage;
+        _ui = Editing.UiFramework;
+        _org = Editing.AzureDevOpsOrganization;
+        _adoProject = Editing.AzureDevOpsProject;
+        foreach (var repo in Editing.Repos)
+        {
+            _selected.Add(repo.Id);
+            _folders[repo.Id] = repo.Folder;
+            _repos.Add(new AdoRepoDto { Id = repo.Id, Name = repo.Name, DefaultBranch = repo.DefaultBranch });
+        }
+        await LoadAll();
+    }
+
+    private async Task SetMode(ProjectMode mode)
+    {
+        _mode = mode;
+        if (Existing && _orgs.Count == 0) await LoadAll();
+    }
+
+    // ---- Loading from Azure DevOps --------------------------------------------------------------------------------
+
+    private async Task LoadAll()
+    {
+        if (!Existing || !State.Integrations.AzureDevOps.Connection.Connected) return;
+        await Load(async () =>
+        {
+            _orgs = await State.AdoOrganizationsAsync();
+            if (_org.Length > 0 && _orgs.Count > 0 && !_orgs.Contains(_org, StringComparer.OrdinalIgnoreCase)) _orgs.Insert(0, _org);
+            if (_orgs.Count == 1 && _org.Length == 0) _org = _orgs[0];
+            if (_org.Length > 0) await LoadProjects();
+        });
+    }
+
+    private async Task LoadProjects()
+    {
+        _adoProjects = await State.AdoProjectsAsync(_org.Trim());
+        if (_adoProject.Length > 0 && !_adoProjects.Any(p => p.Name == _adoProject)) _adoProjects.Insert(0, new AdoProjectDto { Name = _adoProject });
+        if (_adoProject.Length > 0) await LoadRepos();
+    }
+
+    private async Task LoadRepos()
+    {
+        var listed = await State.AdoReposAsync(_org.Trim(), _adoProject.Trim());
+
+        // A repository that was saved with the project but is no longer listed stays visible and selected.
+        foreach (var saved in _repos.Where(r => _selected.Contains(r.Id) && !listed.Any(l => l.Id == r.Id))) listed.Insert(0, saved);
+        _repos = listed;
+    }
+
+    private Task LoadReposClick() => Load(async () =>
+    {
+        if (_adoProjects.Count == 0) await LoadProjects();
+        else await LoadRepos();
+        if (_repos.Count == 0) _error = "No repositories were found in that project.";
+    });
+
+    private async Task Load(Func<Task> action)
+    {
+        _loading = true;
+        _error = null;
+        try { await action(); }
+        catch (GatewayException ex) { _error = ex.Message; }
+        finally { _loading = false; }
+    }
+
+    private async Task OnOrg(ChangeEventArgs e)
+    {
+        _org = e.Value?.ToString() ?? "";
+        _adoProject = "";
+        _adoProjects = [];
+        ClearRepos();
+        if (_org.Length > 0) await Load(LoadProjects);
+    }
+
+    private async Task OnAdoProject(ChangeEventArgs e)
+    {
+        _adoProject = e.Value?.ToString() ?? "";
+        ClearRepos();
+        if (_adoProject.Length == 0) return;
+
+        if (string.IsNullOrWhiteSpace(_name)) Name = _adoProject;
+        await Load(LoadRepos);
+    }
+
+    private void ClearRepos()
+    {
+        _repos = [];
+        _selected.Clear();
+    }
+
+    private void Toggle(AdoRepoDto repo, bool on)
+    {
+        if (on) _selected.Add(repo.Id);
+        else _selected.Remove(repo.Id);
+    }
+
+    // ---- Folder, save ---------------------------------------------------------------------------------------------
+
+    private string Suggest(string name)
+    {
+        var slug = new string(name.Trim().ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
+        while (slug.Contains("--")) slug = slug.Replace("--", "-");
+        if (slug.Length == 0) return "";
+
+        var root = !string.IsNullOrWhiteSpace(State.Settings.DefaultWorkspaceRoot)
+            ? State.Settings.DefaultWorkspaceRoot
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "EtwProjects");
+        return Path.Combine(root, slug);
+    }
+
+    private async Task Pick()
+    {
+        var picked = await State.Shell.PickFolderAsync(string.IsNullOrWhiteSpace(_folder) ? null : _folder);
+        if (picked is null) return;
+        _folder = picked;
+        _folderEdited = true;
+    }
+
+    private void ConnectFirst()
+    {
+        State.Go(Tab.Integrations);
+        _ = Close();
+    }
+
+    private async Task Save()
+    {
+        var request = new SaveProjectRequest
+        {
+            Name = _name,
+            TargetFolder = _folder,
+            BackendLanguage = _backend,
+            UiFramework = _ui,
+            Mode = _mode,
+        };
+        if (Existing)
+        {
+            request.AzureDevOpsOrganization = _org.Trim();
+            request.AzureDevOpsProject = _adoProject.Trim();
+            request.Repos = _repos.Where(r => _selected.Contains(r.Id)).Select(r => new RepoRefDto
+            {
+                Id = r.Id,
+                Name = r.Name,
+                DefaultBranch = r.DefaultBranch.Length > 0 ? r.DefaultBranch : "main",
+                Folder = _folders.GetValueOrDefault(r.Id, ""),
+            }).ToList();
+        }
+
+        _busy = true;
+        var ok = Editing is null ? await State.CreateProjectAsync(request) : await State.SaveProjectAsync(request);
+        _busy = false;
+        if (ok) await Close();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+}

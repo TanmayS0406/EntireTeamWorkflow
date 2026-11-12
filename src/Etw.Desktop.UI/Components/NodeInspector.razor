@@ -1,0 +1,187 @@
+@inherits StateComponent
+
+@{
+    var node = State.SelectedNode;
+}
+@if (node is not null)
+{
+    var info = NodeCatalog.Get(node.Kind);
+    <aside class="inspector">
+        <header>
+            <NodeIcon Kind="node.Kind" Size="28" />
+            <div>
+                <h3>@info.Title</h3>
+                <p>@info.Description</p>
+            </div>
+            <button class="icon-btn" title="Close" @onclick="() => State.SelectNode(null)">✕</button>
+        </header>
+
+        <div class="inspector-body">
+            <label>Name
+                <input type="text" @bind="node.Title" @bind:event="oninput" @bind:after="State.QueueWorkflowSave" maxlength="120" />
+            </label>
+
+            @if (node.Kind != NodeKind.Stories)
+            {
+                <label class="check"><input type="checkbox" @bind="node.Enabled" @bind:after="State.QueueWorkflowSave" /> Enabled (turn off to skip this step)</label>
+            }
+
+            @switch (node.Kind)
+            {
+                case NodeKind.Stories:
+                    <p class="help">@State.Stories.Count(s => s.Selected) of @State.Stories.Count stories will be built.</p>
+                    <button class="btn" @onclick="() => State.Go(Tab.Backlog)">Open the backlog</button>
+                    break;
+
+                case NodeKind.Architect:
+                    <label class="check"><input type="checkbox" checked="@State.Settings.AskClarifyingQuestions" @onchange="ToggleQuestions" /> Let the analyst ask its open questions once</label>
+                    <p class="help">This is the only time a person is involved. After you answer, the run continues without interruption. Attach a Claude node below to choose the model for this step.</p>
+                    @if (ExistingRepos)
+                    {
+                        <p class="help"><b>Existing repositories:</b> this step reads the code of every repository and writes a plan for each one (<code>.etw/docs/plan.md</code> in the workspace, outside the repositories).</p>
+                    }
+                    break;
+
+                case NodeKind.ParallelDev:
+                    @if (ExistingRepos)
+                    {
+                        <p class="help"><b>Existing repositories:</b> one engineer per repository works at the same time (up to @State.Settings.MaxParallelAgents at once — change it in Settings), each only inside its own repository. The role engineers attached below are not used. Attach a Claude node to choose the model.</p>
+                    }
+                    else
+                    {
+                        <p class="help">The nodes under this step are the team. They run at the same time (up to @State.Settings.MaxParallelAgents at once — change it in Settings) against the contract written in the previous step.</p>
+                    }
+                    break;
+
+                case NodeKind.Model:
+                    <ModelFields Node="node" Placeholder="Use the default" />
+                    break;
+
+                case NodeKind.BackendEngineer:
+                    <label>Language and framework
+                        <select @bind="Backend">
+                            @foreach (var b in LanguageCatalog.Backends) { <option value="@b.Id">@b.Name</option> }
+                        </select>
+                    </label>
+                    <p class="help">@LanguageCatalog.Backend(State.Project?.BackendLanguage).Hint</p>
+                    <ModelFields Node="node" Placeholder="Same as the step's Claude node" />
+                    break;
+
+                case NodeKind.FrontendEngineer:
+                    <label>UI framework
+                        <select @bind="Ui">
+                            @foreach (var u in LanguageCatalog.UiFrameworks) { <option value="@u.Id">@u.Name</option> }
+                        </select>
+                    </label>
+                    <p class="help">@LanguageCatalog.Ui(State.Project?.UiFramework).Hint</p>
+                    <ModelFields Node="node" Placeholder="Same as the step's Claude node" />
+                    break;
+
+                case NodeKind.DatabaseEngineer:
+                case NodeKind.QaEngineer:
+                    <ModelFields Node="node" Placeholder="Same as the step's Claude node" />
+                    break;
+
+                case NodeKind.Integrate:
+                    @if (ExistingRepos)
+                    {
+                        <p class="help">Runs after the parallel step: builds the changed repositories, runs their existing test suites and fixes failures. Afterwards the changes of each repository are committed on the run's own branch, pushed, and opened as a <b>pull request</b> into the repository's default branch.</p>
+                    }
+                    else
+                    {
+                        <p class="help">Runs after the parallel step: builds the backend and UI, runs all test suites, fixes failures, writes the README and makes the first git commit.</p>
+                    }
+                    break;
+
+                case NodeKind.CustomAgent:
+                    <label>What should this agent do?
+                        <textarea rows="6" placeholder="e.g. Add structured logging and a health endpoint to the backend." value="@node.Get("prompt")" @onchange='e => SetConfig(node, "prompt", e.Value?.ToString())'></textarea>
+                    </label>
+                    <ModelFields Node="node" Placeholder="Use the default" />
+                    break;
+
+                case NodeKind.NotifySlack:
+                    <NotifyEditor Channel="NotifyChannel.Slack" />
+                    break;
+
+                case NodeKind.NotifyTeams:
+                    <NotifyEditor Channel="NotifyChannel.Teams" />
+                    break;
+
+                case NodeKind.DeployAzure:
+                    @if (ExistingRepos)
+                    {
+                        <p class="help">Not used for existing repositories: their own Azure DevOps pipelines build and deploy them once the pull requests are merged. Turn this step off.</p>
+                    }
+                    else
+                    {
+                        <AzureDeployEditor Node="node" @key="node.Id" />
+                    }
+                    break;
+            }
+        </div>
+
+        @if (node.Kind != NodeKind.Stories)
+        {
+            <footer>
+                @if (_confirmDelete == node.Id)
+                {
+                    <span>Remove this @(node.IsAttachment ? "node" : "step")?</span>
+                    <button class="btn danger small" @onclick="() => Remove(node)">Remove</button>
+                    <button class="btn small" @onclick="() => _confirmDelete = null">Keep</button>
+                }
+                else
+                {
+                    <button class="btn small" @onclick="() => _confirmDelete = node.Id">Remove…</button>
+                }
+            </footer>
+        }
+    </aside>
+}
+
+@code {
+    private string? _confirmDelete;
+
+    private bool ExistingRepos => State.Project?.Mode == ProjectMode.ExistingRepos;
+
+    private string Backend
+    {
+        get => State.Project!.BackendLanguage;
+        set => _ = State.UpdateProjectSetting(r => r.BackendLanguage = value);
+    }
+
+    private string Ui
+    {
+        get => State.Project!.UiFramework;
+        set => _ = State.UpdateProjectSetting(r => r.UiFramework = value);
+    }
+
+    private void SetConfig(WorkflowNode node, string key, string? value)
+    {
+        node.Config[key] = value ?? "";
+        State.QueueWorkflowSave();
+    }
+
+    private Task ToggleQuestions(ChangeEventArgs e)
+    {
+        var copy = new AppSettingsDto
+        {
+            ClaudePath = State.Settings.ClaudePath,
+            Model = State.Settings.Model,
+            Effort = State.Settings.Effort,
+            PermissionMode = State.Settings.PermissionMode,
+            MaxParallelAgents = State.Settings.MaxParallelAgents,
+            AgentTimeoutMinutes = State.Settings.AgentTimeoutMinutes,
+            AskClarifyingQuestions = e.Value is true,
+            SimulateAgents = State.Settings.SimulateAgents,
+            DefaultWorkspaceRoot = State.Settings.DefaultWorkspaceRoot,
+        };
+        return State.SaveSettingsAsync(copy);
+    }
+
+    private void Remove(WorkflowNode node)
+    {
+        _confirmDelete = null;
+        State.RemoveNode(node.Id);
+    }
+}

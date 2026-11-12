@@ -1,0 +1,80 @@
+@inherits StateComponent
+
+<div class="field-group">
+    <div class="status-line">
+        <span class="dot @(Status.Connected ? "ok" : "off")"></span>
+        @if (Status.Connected)
+        {
+            <span>Connected@(string.IsNullOrEmpty(Status.Account) ? "" : " as " + Status.Account)</span>
+        }
+        else
+        {
+            <span>Not connected</span>
+        }
+    </div>
+
+    <div class="btn-row">
+        <button class="btn primary" disabled="@State.EntraBusy" @onclick="SignIn">
+            @if (State.EntraBusy) { <span class="spinner small"></span> }
+            @(Status.Connected ? "Sign in again" : "Sign in with Microsoft")
+        </button>
+        @if (Status.Connected)
+        {
+            <button class="btn" @onclick="() => State.DisconnectEntraAsync(Target)">Disconnect</button>
+        }
+    </div>
+    @if (State.EntraBusy)
+    {
+        <p class="help">Finish signing in in the browser window that just opened.</p>
+    }
+    else if (!Status.Connected)
+    {
+        <p class="help">Opens your browser to sign in with your work or school account. Nothing to set up.</p>
+    }
+
+    <details>
+        <summary>Advanced: use your own app registration</summary>
+        <p class="help">Only needed if your organization blocks the built-in Microsoft sign-in. Leave both boxes empty otherwise.</p>
+        <div class="two-col">
+            <label>Application (client) ID
+                <input type="text" autocomplete="off" spellcheck="false" placeholder="Built-in Microsoft sign-in" @bind="_client" @bind:event="oninput" />
+            </label>
+            <label>Directory (tenant) ID <small>(or “organizations”)</small>
+                <input type="text" autocomplete="off" spellcheck="false" placeholder="organizations" @bind="_tenant" @bind:event="oninput" />
+            </label>
+        </div>
+        <ol class="steps">
+            <li>Entra admin center → <b>App registrations</b> → <b>New registration</b>. Supported accounts: your organization (or any organization).</li>
+            <li>Under <b>Authentication</b> → <b>Add a platform</b> → <b>Mobile and desktop applications</b>, add the redirect URI <code>http://localhost</code>, and allow public client flows.</li>
+            <li>Under <b>API permissions</b> add the delegated permission
+                @if (Target == EntraTarget.AzureDevOps) { <text><b>Azure DevOps → user_impersonation</b>.</text> }
+                else if (Target == EntraTarget.Teams) { <text><b>Microsoft Graph → ChannelMessage.Send, Team.ReadBasic.All and Channel.ReadBasic.All</b>.</text> }
+                else { <text><b>Azure Service Management → user_impersonation</b>.</text> }
+            </li>
+            <li>Copy the <b>Application (client) ID</b> and <b>Directory (tenant) ID</b> here. No client secret is needed.</li>
+        </ol>
+    </details>
+    <p class="help">Sign-in happens in your browser (OAuth 2.0 authorization code with PKCE). The tokens are kept encrypted by the background service so the workflow can keep working while the app is closed.</p>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public EntraTarget Target { get; set; }
+
+    [Parameter, EditorRequired] public ConnectionStatusDto Status { get; set; } = new();
+
+    private string _client = "";
+    private string _tenant = "organizations";
+    private string? _loadedFor;
+
+    protected override void OnParametersSet()
+    {
+        // Fill the boxes from the saved configuration once (and again when a different one arrives), never while the user types.
+        var key = Status.ClientId + "|" + Status.TenantId;
+        if (key == _loadedFor) return;
+        _loadedFor = key;
+        _client = Status.ClientId == AppState.DefaultClientFor(Target) ? "" : Status.ClientId;
+        _tenant = string.IsNullOrWhiteSpace(Status.TenantId) ? "organizations" : Status.TenantId;
+    }
+
+    private Task SignIn() => State.ConnectEntraAsync(Target, string.IsNullOrWhiteSpace(_tenant) ? "organizations" : _tenant.Trim(), _client.Trim());
+}

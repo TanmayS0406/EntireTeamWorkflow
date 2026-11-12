@@ -1,0 +1,386 @@
+@inherits StateComponent
+
+@if (State.Project is null)
+{
+    <div class="canvas-empty">
+        <div class="empty-card">
+            <h2>Create your first project</h2>
+            <p>A project holds the user stories, the team workflow and the folder where the application gets built.</p>
+            <button class="btn primary" @onclick="() => OnNewProject.InvokeAsync()">New project</button>
+        </div>
+    </div>
+}
+else
+{
+    var wf = State.Project.Workflow;
+    var last = wf.Chain().LastOrDefault();
+
+    <div class="canvas" style="background-position: @(F(_panX))px @(F(_panY))px; background-size: @(F(24 * _zoom))px @(F(24 * _zoom))px;"
+         @onmousedown="OnBackgroundDown" @onmousemove="OnMove" @onmouseup="OnUp" @onmouseleave="OnUp" @onwheel="OnWheel" @onwheel:preventDefault>
+        <div class="world" style="transform: translate(@(F(_panX))px, @(F(_panY))px) scale(@F(_zoom));">
+
+            <svg class="edges" width="3600" height="1400" viewBox="0 0 3600 1400">
+                @foreach (var edge in wf.Edges)
+                {
+                    var a = wf.Find(edge.From);
+                    var b = wf.Find(edge.To);
+                    if (a is null || b is null) { continue; }
+                    <path class="edge @(IsLit(b) ? "lit" : "")" d="@MainPath(a, b)" />
+                }
+                @foreach (var parent in wf.Nodes.Where(n => WorkflowGeometry.IsAgent(n.Kind)))
+                {
+                    var kids = wf.ChildrenOf(parent.Id);
+                    for (var i = 0; i < kids.Count; i++)
+                    {
+                        <path class="edge dashed @(IsLit(kids[i]) ? "lit" : "")" d="@AttachPath(parent, kids[i], i, kids.Count)" />
+                    }
+                }
+                @if (last is not null)
+                {
+                    <path class="edge" d="@EndPath(last)" />
+                }
+            </svg>
+
+            @foreach (var node in wf.Nodes)
+            {
+                var (x, y) = Pos(wf, node);
+                var agent = WorkflowGeometry.IsAgent(node.Kind);
+                var w = WorkflowGeometry.Width(node.Kind);
+                var h = WorkflowGeometry.Height(node.Kind);
+                var st = State.StateOf(node.Id);
+
+                <div class="node @NodeClass(node, st)" style="left:@(F(x))px; top:@(F(y))px; width:@(F(w))px;"
+                     @onmousedown="e => BeginDrag(node, e)" @onmousedown:stopPropagation
+                     @onclick="() => Click(node)" @onclick:stopPropagation>
+                    <div class="box" style="height:@(F(h))px">
+                        <NodeIcon Kind="node.Kind" Size="@(agent ? 34 : 40)" />
+                        @if (agent)
+                        {
+                            <span class="agent-title">@node.Title</span>
+                        }
+                        @if (!node.IsAttachment)
+                        {
+                            @if (node.Kind != NodeKind.Stories) { <span class="port in"></span> }
+                            <span class="port out"></span>
+                        }
+                        @if (st != NodeRunState.Idle)
+                        {
+                            <span class="badge b-@st.ToString().ToLowerInvariant()"></span>
+                        }
+                    </div>
+                    @if (!agent)
+                    {
+                        <div class="label">@node.Title</div>
+                    }
+                    @if (agent)
+                    {
+                        var kids = wf.ChildrenOf(node.Id);
+                        for (var i = 0; i < kids.Count; i++)
+                        {
+                            <span class="socket" style="left:@(F(WorkflowGeometry.SocketX(node, i, kids.Count) - node.X))px; top:@(F(h))px"></span>
+                        }
+                        @if (AttachOptions(wf, node).Count > 0)
+                        {
+                            <button class="mini-plus" style="left:@(F(w / 2))px; top:@(F(h + 76))px" title="Add to this step"
+                                    @onclick="() => OpenAttach(node)" @onclick:stopPropagation @onmousedown:stopPropagation>+</button>
+                        }
+                    }
+                </div>
+            }
+
+            @if (last is not null)
+            {
+                <div class="add-end" style="left:@(F(last.X + WorkflowGeometry.Width(last.Kind) + 70))px; top:@(F(last.Y + WorkflowGeometry.Height(last.Kind) / 2 - 20))px">
+                    @if (!_addedOnce)
+                    {
+                        <span class="hint-tag">ADD STEP</span>
+                    }
+                    <button class="add-btn" title="Add a step" @onclick="ToggleAddMenu" @onclick:stopPropagation @onmousedown:stopPropagation>+</button>
+                    @if (_addMenu)
+                    {
+                        <div class="menu" @onmousedown:stopPropagation @onclick:stopPropagation>
+                            @foreach (var kind in NodeCatalog.AddableSteps)
+                            {
+                                var info = NodeCatalog.Get(kind);
+                                <button class="menu-item" @onclick="() => AddStep(kind)">
+                                    <NodeIcon Kind="kind" Size="22" />
+                                    <span><b>@info.Title</b><small>@info.Description</small></span>
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (_attachFor is not null)
+            {
+                var parent = _attachFor;
+                <div class="menu attach-menu" style="left:@(F(parent.X + WorkflowGeometry.AgentWidth / 2 + 24))px; top:@(F(parent.Y + WorkflowGeometry.AgentHeight + 70))px"
+                     @onmousedown:stopPropagation @onclick:stopPropagation>
+                    @foreach (var kind in AttachOptions(wf, parent))
+                    {
+                        var info = NodeCatalog.Get(kind);
+                        <button class="menu-item" @onclick="() => Attach(parent, kind)">
+                            <NodeIcon Kind="kind" Size="22" />
+                            <span><b>@info.Title</b><small>@info.Description</small></span>
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="proj-card" @onmousedown:stopPropagation>
+            <div class="proj-title">@State.Project.Name</div>
+            @if (State.Project.Mode == ProjectMode.ExistingRepos)
+            {
+                <div class="help">Azure DevOps: @State.Project.AzureDevOpsOrganization / @State.Project.AzureDevOpsProject</div>
+                <div class="repo-chips">
+                    @foreach (var repo in State.Project.Repos)
+                    {
+                        <span class="chip" title="@repo.Folder &rarr; pull request into @repo.DefaultBranch">@repo.Name</span>
+                    }
+                </div>
+                <button class="btn small" @onclick="() => _editRepos = true">Repositories&hellip;</button>
+            }
+            else
+            {
+                <label>Backend
+                    <select @bind="Backend">
+                        @foreach (var b in LanguageCatalog.Backends) { <option value="@b.Id">@b.Name</option> }
+                    </select>
+                </label>
+                <label>UI
+                    <select @bind="Ui">
+                        @foreach (var u in LanguageCatalog.UiFrameworks) { <option value="@u.Id">@u.Name</option> }
+                    </select>
+                </label>
+            }
+            <label>@(State.Project.Mode == ProjectMode.ExistingRepos ? "Workspace" : "Folder")
+                <span class="folder-row">
+                    <input type="text" readonly value="@State.Project.TargetFolder" title="@State.Project.TargetFolder" />
+                    <button class="btn small" @onclick="PickFolder" title="Choose another folder">…</button>
+                    <button class="btn small" @onclick="OpenFolder" title="Open in Explorer">↗</button>
+                </span>
+            </label>
+        </div>
+
+        @if (_editRepos)
+        {
+            <NewProjectDialog Editing="State.Project" OnClose="() => _editRepos = false" />
+        }
+
+        <div class="run-bar" @onmousedown:stopPropagation>
+            @if (State.RunActive)
+            {
+                <button class="btn run stop" @onclick="State.CancelRunAsync">■ Stop</button>
+                <span class="run-note">@(State.Run?.Status == RunStatus.AwaitingInput ? "Waiting for your answers…" : "Team is working…")</span>
+            }
+            else
+            {
+                <button class="btn run" disabled="@(Blocker is not null)" title="@(Blocker ?? "Start the team")" @onclick="State.StartRunAsync">▶ Run workflow</button>
+                <span class="run-note">@(Blocker ?? $"{SelectedStories} stor{(SelectedStories == 1 ? "y" : "ies")} selected")</span>
+            }
+        </div>
+
+        <div class="zoom-bar" @onmousedown:stopPropagation>
+            <button class="btn small" @onclick="() => Zoom(0.9)">−</button>
+            <span>@((int)(_zoom * 100))%</span>
+            <button class="btn small" @onclick="() => Zoom(1.1)">+</button>
+            <button class="btn small" title="Reset view" @onclick="ResetView">⟲</button>
+        </div>
+
+        @if (State.SelectedNode is not null)
+        {
+            <div class="inspector-host" @onmousedown:stopPropagation @onclick:stopPropagation @onwheel:stopPropagation>
+                <NodeInspector />
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public EventCallback OnNewProject { get; set; }
+
+    private double _panX = 0, _panY = 0, _zoom = 1;
+    private bool _panning, _panMoved, _addMenu, _addedOnce, _dragMoved, _editRepos;
+    private double _startX, _startY, _originX, _originY;
+    private WorkflowNode? _drag, _attachFor;
+
+    private string Backend
+    {
+        get => State.Project!.BackendLanguage;
+        set => _ = State.UpdateProjectSetting(r => r.BackendLanguage = value);
+    }
+
+    private string Ui
+    {
+        get => State.Project!.UiFramework;
+        set => _ = State.UpdateProjectSetting(r => r.UiFramework = value);
+    }
+
+    private int SelectedStories => State.Stories.Count(s => s.Selected);
+
+    private string? Blocker =>
+        State.Stories.Count == 0 ? "Add or import user stories first (Backlog tab)"
+        : SelectedStories == 0 ? "Tick at least one story in the Backlog tab"
+        : string.IsNullOrWhiteSpace(State.Project?.TargetFolder) ? "Choose a project folder"
+        : State.Project is { Mode: ProjectMode.ExistingRepos, Repos.Count: 0 } ? "Choose the project's repositories (Repositories…)"
+        : null;
+
+    // ---- Geometry ----------------------------------------------------------------------------------------------
+
+    private static (double X, double Y) Pos(WorkflowDefinition wf, WorkflowNode node)
+    {
+        if (!node.IsAttachment) return (node.X, node.Y);
+        var parent = wf.Find(node.ParentId!);
+        if (parent is null) return (node.X, node.Y);
+        var kids = wf.ChildrenOf(parent.Id);
+        return WorkflowGeometry.AttachmentPosition(parent, Math.Max(0, kids.FindIndex(k => k.Id == node.Id)), kids.Count);
+    }
+
+    private string MainPath(WorkflowNode a, WorkflowNode b)
+    {
+        var (ax, ay) = (a.X, a.Y);
+        var (bx, by) = (b.X, b.Y);
+        double sx = ax + WorkflowGeometry.Width(a.Kind) + 6, sy = ay + WorkflowGeometry.Height(a.Kind) / 2;
+        double ex = bx - 6, ey = by + WorkflowGeometry.Height(b.Kind) / 2;
+        var dx = Math.Max(40, Math.Abs(ex - sx) / 2);
+        return $"M {F(sx)} {F(sy)} C {F(sx + dx)} {F(sy)}, {F(ex - dx)} {F(ey)}, {F(ex)} {F(ey)}";
+    }
+
+    private string AttachPath(WorkflowNode parent, WorkflowNode child, int index, int count)
+    {
+        var wf = State.Project!.Workflow;
+        var (cx, cy) = Pos(wf, child);
+        double sx = WorkflowGeometry.SocketX(parent, index, count), sy = parent.Y + WorkflowGeometry.AgentHeight + 6;
+        double ex = cx + WorkflowGeometry.IconSize / 2, ey = cy - 6;
+        return $"M {F(sx)} {F(sy)} C {F(sx)} {F(sy + 70)}, {F(ex)} {F(ey - 70)}, {F(ex)} {F(ey)}";
+    }
+
+    private static string EndPath(WorkflowNode last)
+    {
+        double sx = last.X + WorkflowGeometry.Width(last.Kind) + 6, sy = last.Y + WorkflowGeometry.Height(last.Kind) / 2;
+        return $"M {F(sx)} {F(sy)} L {F(sx + 64)} {F(sy)}";
+    }
+
+    private bool IsLit(WorkflowNode target) => State.StateOf(target.Id) is NodeRunState.Running or NodeRunState.Succeeded;
+
+    private string NodeClass(WorkflowNode node, NodeRunState state)
+    {
+        var parts = new List<string> { "k-" + node.Kind.ToString().ToLowerInvariant(), "s-" + state.ToString().ToLowerInvariant() };
+        if (WorkflowGeometry.IsAgent(node.Kind)) parts.Add("agent");
+        if (node.IsAttachment) parts.Add("sub");
+        if (!node.Enabled) parts.Add("off");
+        if (State.SelectedNodeId == node.Id) parts.Add("selected");
+        return string.Join(' ', parts);
+    }
+
+    // ---- Interaction -------------------------------------------------------------------------------------------
+
+    private void OnBackgroundDown(MouseEventArgs e)
+    {
+        if (e.Button != 0) return;
+        _panning = true;
+        _panMoved = false;
+        (_startX, _startY, _originX, _originY) = (e.ClientX, e.ClientY, _panX, _panY);
+        _addMenu = false;
+        _attachFor = null;
+    }
+
+    private void BeginDrag(WorkflowNode node, MouseEventArgs e)
+    {
+        if (e.Button != 0 || node.IsAttachment) return;
+        _drag = node;
+        _dragMoved = false;
+        (_startX, _startY, _originX, _originY) = (e.ClientX, e.ClientY, node.X, node.Y);
+    }
+
+    private void OnMove(MouseEventArgs e)
+    {
+        if (_drag is not null)
+        {
+            double dx = (e.ClientX - _startX) / _zoom, dy = (e.ClientY - _startY) / _zoom;
+            if (!_dragMoved && Math.Abs(dx) + Math.Abs(dy) < 4) return;
+            _dragMoved = true;
+            _drag.X = Math.Max(0, Math.Round((_originX + dx) / 10) * 10);
+            _drag.Y = Math.Max(0, Math.Round((_originY + dy) / 10) * 10);
+        }
+        else if (_panning)
+        {
+            double dx = e.ClientX - _startX, dy = e.ClientY - _startY;
+            if (!_panMoved && Math.Abs(dx) + Math.Abs(dy) < 4) return;
+            _panMoved = true;
+            _panX = _originX + dx;
+            _panY = _originY + dy;
+        }
+    }
+
+    private void OnUp()
+    {
+        if (_drag is not null && _dragMoved) State.QueueWorkflowSave();
+        if (_panning && !_panMoved) State.SelectNode(null);
+        _drag = null;
+        _panning = false;
+    }
+
+    private void Click(WorkflowNode node)
+    {
+        if (_dragMoved) { _dragMoved = false; return; }
+        _addMenu = false;
+        _attachFor = null;
+        State.SelectNode(node.Id);
+    }
+
+    private void OnWheel(WheelEventArgs e) => Zoom(e.DeltaY < 0 ? 1.1 : 0.9);
+
+    private void Zoom(double factor) => _zoom = Math.Clamp(Math.Round(_zoom * factor, 2), 0.4, 1.6);
+
+    private void ResetView() => (_panX, _panY, _zoom) = (0, 0, 1);
+
+    private void ToggleAddMenu()
+    {
+        _addMenu = !_addMenu;
+        _attachFor = null;
+        _addedOnce = true;
+    }
+
+    private void AddStep(NodeKind kind)
+    {
+        _addMenu = false;
+        State.AddStep(kind);
+    }
+
+    private void OpenAttach(WorkflowNode parent)
+    {
+        _attachFor = _attachFor?.Id == parent.Id ? null : parent;
+        _addMenu = false;
+    }
+
+    private void Attach(WorkflowNode parent, NodeKind kind)
+    {
+        _attachFor = null;
+        State.AttachNode(parent.Id, kind);
+    }
+
+    /// <summary>What can still be added under an agent step: one of each kind.</summary>
+    private static List<NodeKind> AttachOptions(WorkflowDefinition wf, WorkflowNode parent)
+    {
+        var present = wf.ChildrenOf(parent.Id).Select(c => c.Kind).ToHashSet();
+        return NodeCatalog.AttachableTo(parent.Kind).Where(k => !present.Contains(k)).ToList();
+    }
+
+    private async Task PickFolder()
+    {
+        var folder = await State.Shell.PickFolderAsync(State.Project?.TargetFolder);
+        if (folder is not null) await State.UpdateProjectSetting(r => r.TargetFolder = folder);
+    }
+
+    private void OpenFolder()
+    {
+        if (!string.IsNullOrWhiteSpace(State.Project?.TargetFolder))
+        {
+            Directory.CreateDirectory(State.Project.TargetFolder);
+            State.Shell.OpenFolder(State.Project.TargetFolder);
+        }
+    }
+}

@@ -1,0 +1,35 @@
+﻿@inherits StateComponent
+
+<label>Claude model
+    <input type="text" list="etw-models" placeholder="@Placeholder" value="@Node.Get("model")" @onchange='e => Set("model", e.Value?.ToString())' />
+</label>
+<datalist id="etw-models">
+    @foreach (var m in new[] { "opus", "sonnet", "haiku", "fable" })
+    {
+        <option value="@m"></option>
+    }
+</datalist>
+<label>Effort
+    <select value="@Node.Get("effort")" @onchange='e => Set("effort", e.Value?.ToString())'>
+        <option value="">Default</option>
+        @foreach (var level in new[] { "low", "medium", "high", "xhigh", "max" })
+        {
+            <option value="@level" selected="@(Node.Get("effort") == level)">@level</option>
+        }
+    </select>
+</label>
+<p class="help">Pick an alias (opus, sonnet, haiku, fable) or type a full model id. Which levels apply depends on the model.</p>
+
+@code {
+    [Parameter, EditorRequired] public WorkflowNode Node { get; set; } = default!;
+
+    [Parameter] public string Placeholder { get; set; } = "";
+
+    private void Set(string key, string? value)
+    {
+        Node.Config[key] = (value ?? "").Trim();
+        State.QueueWorkflowSave();
+    }
+}
+
+

@@ -1,0 +1,191 @@
+@inherits StateComponent
+
+<div class="page runs">
+    @if (State.Project is null)
+    {
+        <div class="empty-card"><h2>No project yet</h2><p>Create a project and run its workflow to see the team working here.</p></div>
+    }
+    else
+    {
+        <div class="runs-layout">
+            <aside class="run-list">
+                <h3>Runs</h3>
+                @if (State.RunHistory.Count == 0)
+                {
+                    <div class="empty-note">No runs yet. Press <b>Run workflow</b> on the Workflow tab.</div>
+                }
+                @foreach (var r in State.RunHistory)
+                {
+                    <button class="run-item @(State.Run?.Id == r.Id ? "active" : "")" @onclick="() => Load(r.Id)">
+                        <span class="dot @StatusDot(r.Status)"></span>
+                        <span>
+                            <b>@r.StartedUtc.ToLocalTime().ToString("g")</b>
+                            <small>@r.Status · @r.StoryCount stor@(r.StoryCount == 1 ? "y" : "ies")</small>
+                        </span>
+                    </button>
+                }
+            </aside>
+
+            <section class="run-main">
+                @if (State.Run is null)
+                {
+                    <div class="empty-note">Select a run to see what each agent did.</div>
+                }
+                else
+                {
+                    var run = State.Run;
+                    <div class="run-head">
+                        <div>
+                            <h2><span class="dot @StatusDot(run.Status)"></span> @StatusText(run.Status)</h2>
+                            <p>Started @run.StartedUtc.ToLocalTime().ToString("g") · @Elapsed(run) · @run.StoryCount stor@(run.StoryCount == 1 ? "y" : "ies")</p>
+                        </div>
+                        @if (State.RunActive)
+                        {
+                            <button class="btn danger" @onclick="State.CancelRunAsync">■ Stop run</button>
+                        }
+                    </div>
+
+                    <div class="stages">
+                        @foreach (var node in State.Project.Workflow.Chain())
+                        {
+                            var st = State.StateOf(node.Id);
+                            <div class="stage s-@st.ToString().ToLowerInvariant() @(node.Enabled ? "" : "off")">
+                                <NodeIcon Kind="node.Kind" Size="18" />
+                                <span>@node.Title</span>
+                            </div>
+                        }
+                    </div>
+
+                    @if (run.Status == RunStatus.AwaitingInput)
+                    {
+                        <div class="questions">
+                            <h3>The analyst has a few questions about the stories</h3>
+                            <p class="help">This is the only time the team asks you anything. Answer what you can, leave the rest empty, and the run continues on its own.</p>
+                            @foreach (var q in run.PendingQuestions)
+                            {
+                                <label>@q.Text
+                                    <textarea rows="2" value="@AnswerOf(q.Id)" @oninput="e => _answers[q.Id] = e.Value?.ToString() ?? string.Empty"></textarea>
+                                </label>
+                            }
+                            <div class="btn-row">
+                                <button class="btn primary" @onclick="Submit">Continue</button>
+                                <button class="btn" @onclick="Skip">Skip — decide yourselves</button>
+                            </div>
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(run.Summary) && !State.RunActive)
+                    {
+                        <pre class="summary">@run.Summary</pre>
+                    }
+
+                    var lanes = Lanes();
+                    @if (lanes.Count > 0)
+                    {
+                        <h3 class="section">Agents</h3>
+                        <div class="lanes">
+                            @foreach (var lane in lanes)
+                            {
+                                <div class="lane l-@lane.Status.ToLowerInvariant()">
+                                    <div class="lane-head">
+                                        <b>@lane.Name</b>
+                                        <span class="pill @lane.Status.ToLowerInvariant()">@lane.Status</span>
+                                    </div>
+                                    <div class="lane-body">
+                                        @foreach (var line in lane.Lines)
+                                        {
+                                            <div class="line @(line.Kind == RunEventKind.AgentActivity ? "act" : line.Kind is RunEventKind.AgentFailed ? "fail" : "")">
+                                                @if (line.Kind == RunEventKind.AgentActivity) { <span class="chev">›</span> }
+                                                @line.Message
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+
+                    <h3 class="section">Log</h3>
+                    <div class="log">
+                        @foreach (var e in State.Events.Where(IsLogLine).TakeLast(300))
+                        {
+                            <div class="log-line k-@e.Kind.ToString().ToLowerInvariant()">
+                                <time>@e.TimeUtc.ToLocalTime().ToString("HH:mm:ss")</time>
+                                <span class="who">@(e.Agent ?? "")</span>
+                                <span class="msg">@e.Message</span>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly Dictionary<string, string> _answers = [];
+
+    private sealed record Lane(string Name, string Status, List<RunEventDto> Lines);
+
+    private Task Load(Guid id) => State.TryAsync(() => State.LoadRunAsync(id));
+
+    private string AnswerOf(string id) => _answers.GetValueOrDefault(id, "");
+
+    private async Task Submit()
+    {
+        var list = State.Run!.PendingQuestions.Select(q => new ClarifyingQuestion { Id = q.Id, Text = q.Text, Answer = AnswerOf(q.Id) }).ToList();
+        if (await State.AnswerQuestionsAsync(list)) _answers.Clear();
+    }
+
+    private async Task Skip()
+    {
+        _answers.Clear();
+        await Submit();
+    }
+
+    private static bool IsLogLine(RunEventDto e) => e.Kind is not (RunEventKind.AgentText or RunEventKind.AgentActivity);
+
+    /// <summary>One lane per agent, showing what it said and did most recently, so parallel work is visible at a glance.</summary>
+    private List<Lane> Lanes()
+    {
+        var lanes = new List<Lane>();
+        foreach (var group in State.Events.Where(e => e.Agent is not null && e.Kind is RunEventKind.AgentStarted or RunEventKind.AgentText
+                     or RunEventKind.AgentActivity or RunEventKind.AgentCompleted or RunEventKind.AgentFailed)
+                     .GroupBy(e => e.NodeId + "|" + e.Agent))
+        {
+            var items = group.ToList();
+            var last = items.LastOrDefault(e => e.Kind is RunEventKind.AgentStarted or RunEventKind.AgentCompleted or RunEventKind.AgentFailed);
+            var status = last?.Kind switch
+            {
+                RunEventKind.AgentCompleted => "Done",
+                RunEventKind.AgentFailed => "Failed",
+                _ => "Working",
+            };
+            var lines = items.Where(e => e.Kind is RunEventKind.AgentText or RunEventKind.AgentActivity or RunEventKind.AgentFailed).TakeLast(14).ToList();
+            lanes.Add(new Lane(items[0].Agent!, status, lines));
+        }
+        return lanes;
+    }
+
+    private static string StatusDot(RunStatus s) => s switch
+    {
+        RunStatus.Succeeded => "ok",
+        RunStatus.Failed => "bad",
+        RunStatus.Cancelled => "off",
+        RunStatus.AwaitingInput => "warn",
+        _ => "run",
+    };
+
+    private static string StatusText(RunStatus s) => s switch
+    {
+        RunStatus.AwaitingInput => "Waiting for your answers",
+        RunStatus.Running or RunStatus.Pending => "Running",
+        _ => s.ToString(),
+    };
+
+    private static string Elapsed(RunDto run)
+    {
+        var t = (run.EndedUtc ?? DateTime.UtcNow) - run.StartedUtc;
+        return t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes}m" : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes}m {t.Seconds}s" : $"{t.Seconds}s";
+    }
+}

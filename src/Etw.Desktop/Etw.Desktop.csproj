@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- The Windows version in the TFM is required: WebView2's WPF control loads the Windows SDK projection assembly. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Etw.Desktop</RootNamespace>
+    <AssemblyName>Etw.Desktop</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Wpf" />
+    <ProjectReference Include="..\Etw.Desktop.UI\Etw.Desktop.UI.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- BlazorWebView resolves HostPage as a real file next to the exe. -->
+    <Content Update="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

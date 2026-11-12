@@ -1,0 +1,137 @@
+@inherits StateComponent
+
+<div class="page narrow">
+    <div class="page-head">
+        <div>
+            <h2>Settings</h2>
+            <p>Machine-wide settings for the Claude agents and the background services.</p>
+        </div>
+        <button class="btn primary" @onclick="Save">Save settings</button>
+    </div>
+
+    <section class="card">
+        <header><NodeIcon Kind="NodeKind.Model" Size="26" /><div><h3>Claude</h3><p>Signed in as @(State.ClaudeAccount ?? "unknown")@(State.BackendClaude is { LoggedIn: true } ? " · backend service is signed in too" : "")</p></div></header>
+
+        <label>Claude Code CLI path <small>(empty = find it automatically)</small>
+            <input type="text" placeholder="C:\Users\you\.local\bin\claude.exe" @bind="_s.ClaudePath" />
+        </label>
+        <div class="two-col">
+            <label>Default model
+                <input type="text" list="etw-models" placeholder="Claude Code's default" @bind="_s.Model" />
+            </label>
+            <label>Default effort
+                <select @bind="_s.Effort">
+                    <option value="">Default</option>
+                    @foreach (var level in new[] { "low", "medium", "high", "xhigh", "max" }) { <option value="@level">@level</option> }
+                </select>
+            </label>
+        </div>
+        <datalist id="etw-models">@foreach (var m in new[] { "opus", "sonnet", "haiku", "fable" }) { <option value="@m"></option> }</datalist>
+
+        <fieldset>
+            <legend>What agents may do unattended</legend>
+            <label class="radio"><input type="radio" name="perm" checked="@(_s.PermissionMode == "acceptEdits")" @onchange='() => _s.PermissionMode = "acceptEdits"' />
+                <span><b>Edit files and run build tools</b> (recommended) — agents write inside the project folder and run only the build/test tools of the chosen languages (dotnet, npm, pip, mvn, go, …).</span></label>
+            <label class="radio"><input type="radio" name="perm" checked="@(_s.PermissionMode == "auto")" @onchange='() => _s.PermissionMode = "auto"' />
+                <span><b>Auto mode</b> — Claude Code's safety classifier approves other actions too and blocks risky ones. Fewer failed steps, less predictable.</span></label>
+        </fieldset>
+
+        <div class="two-col">
+            <label>Agents working at the same time
+                <input type="number" min="1" max="8" @bind="_s.MaxParallelAgents" />
+            </label>
+            <label>Stop an agent after (minutes)
+                <input type="number" min="5" max="240" @bind="_s.AgentTimeoutMinutes" />
+            </label>
+        </div>
+        <p class="help">Parallel agents each use your Claude plan's capacity. If you hit usage limits, lower this.</p>
+
+        <label class="check"><input type="checkbox" @bind="_s.AskClarifyingQuestions" /> After the stories are loaded, let the analyst ask its open questions once</label>
+        <label class="check"><input type="checkbox" @bind="_s.SimulateAgents" /> <b>Simulation mode</b> — run the workflow with pretend agents (no Claude usage, no files written). Good for trying the screens.</label>
+    </section>
+
+    <section class="card">
+        <header><div><h3>Projects</h3><p>Defaults for new projects.</p></div></header>
+        <label>Default folder for new projects
+            <span class="folder-row">
+                <input type="text" placeholder="@Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "EtwProjects")" @bind="_s.DefaultWorkspaceRoot" />
+                <button class="btn small" @onclick="Pick">Browse…</button>
+            </span>
+        </label>
+
+        @if (State.Project is not null)
+        {
+            <div class="danger-zone">
+                @if (_confirmDelete)
+                {
+                    <span>Remove “@State.Project.Name” from this app? Its stories and runs are deleted; the generated files stay on disk.</span>
+                    <button class="btn danger small" @onclick="Delete">Remove project</button>
+                    <button class="btn small" @onclick="() => _confirmDelete = false">Keep</button>
+                }
+                else
+                {
+                    <button class="btn small" @onclick="() => _confirmDelete = true">Remove “@State.Project.Name”…</button>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="card">
+        <header><div><h3>Services</h3><p>The background Windows services that do the work.</p></div><button class="btn small" @onclick="State.RefreshServicesAsync">Refresh</button></header>
+        @if (State.Services.Count == 0)
+        {
+            <p class="help">Status not available yet.</p>
+        }
+        @foreach (var s in State.Services)
+        {
+            <div class="service-row">
+                <span class="dot @(s.Healthy ? "ok" : "bad")"></span>
+                <b>@s.Name</b>
+                <code>@s.Url</code>
+                <span>@(s.Healthy ? "running" : "not running")</span>
+            </div>
+        }
+        <p class="help">Live updates: @(State.LiveConnected ? "connected" : "not connected"). Logs are in %ProgramData%\EntireTeamWorkflow\logs.</p>
+    </section>
+</div>
+
+@code {
+    private AppSettingsDto _s = new();
+    private bool _confirmDelete;
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        _s = Clone(State.Settings);
+    }
+
+    private static AppSettingsDto Clone(AppSettingsDto s) => new()
+    {
+        ClaudePath = s.ClaudePath,
+        Model = s.Model,
+        Effort = s.Effort,
+        PermissionMode = s.PermissionMode,
+        MaxParallelAgents = s.MaxParallelAgents,
+        AgentTimeoutMinutes = s.AgentTimeoutMinutes,
+        AskClarifyingQuestions = s.AskClarifyingQuestions,
+        SimulateAgents = s.SimulateAgents,
+        DefaultWorkspaceRoot = s.DefaultWorkspaceRoot,
+    };
+
+    private async Task Save()
+    {
+        if (await State.SaveSettingsAsync(_s)) _s = Clone(State.Settings);
+    }
+
+    private async Task Pick()
+    {
+        var folder = await State.Shell.PickFolderAsync(_s.DefaultWorkspaceRoot);
+        if (folder is not null) _s.DefaultWorkspaceRoot = folder;
+    }
+
+    private async Task Delete()
+    {
+        _confirmDelete = false;
+        await State.DeleteProjectAsync();
+    }
+}

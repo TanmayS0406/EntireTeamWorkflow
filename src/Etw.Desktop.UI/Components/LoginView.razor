@@ -1,0 +1,41 @@
+@inherits StateComponent
+
+<div class="login">
+    <div class="login-card">
+        <svg class="login-logo" viewBox="0 0 32 32" width="56" height="56" aria-hidden="true">
+            <g stroke="#D97757" stroke-width="3.4" stroke-linecap="round">
+                <path d="M16 3v26M3 16h26M7 7l18 18M25 7L7 25" />
+            </g>
+        </svg>
+        <h1>Entire Team Workflow</h1>
+        <p class="lead">An AI delivery team that builds your user stories in parallel — backend and UI engineers working side by side. Sign in with your Claude account to begin.</p>
+
+        @if (State.ClaudeCliFound)
+        {
+            <button class="btn claude" disabled="@State.AuthBusy" @onclick="State.SignInAsync">
+                @if (State.AuthBusy) { <span class="spinner small"></span> }
+                Sign in with Claude
+            </button>
+        }
+        else
+        {
+            <button class="btn claude" @onclick='() => State.Shell.OpenUrl("https://claude.com/claude-code")'>Get Claude Code</button>
+            <button class="btn" @onclick="State.InitializeAsync">I installed it — check again</button>
+        }
+
+        @if (!string.IsNullOrEmpty(State.AuthMessage))
+        {
+            <p class="auth-msg">@State.AuthMessage</p>
+        }
+
+        @if (State.BackendError is not null)
+        {
+            <p class="error-text">@State.BackendError</p>
+        }
+
+        <details>
+            <summary>How does the sign-in work?</summary>
+            <p>A console window and your browser open and take you through the normal Claude sign-in (Pro, Max, Team, Enterprise or Console account). The official <b>Claude Code</b> command-line tool performs the OAuth sign-in and keeps the credentials; this app never sees or stores them. The agents that build your software run through that same signed-in tool.</p>
+        </details>
+    </div>
+</div>

@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Etw.Shared/Etw.Shared.csproj" />
+    <Project Path="src/Etw.Hosting/Etw.Hosting.csproj" />
+    <Project Path="src/Etw.Backend/Etw.Backend.csproj" />
+    <Project Path="src/Etw.Integrations/Etw.Integrations.csproj" />
+    <Project Path="src/Etw.Orchestrator/Etw.Orchestrator.csproj" />
+    <Project Path="src/Etw.Azure/Etw.Azure.csproj" />
+    <Project Path="src/Etw.Desktop.UI/Etw.Desktop.UI.csproj" />
+    <Project Path="src/Etw.Desktop/Etw.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/scripts/">
+    <File Path="scripts/Start-Dev.ps1" />
+  </Folder>
+</Solution>

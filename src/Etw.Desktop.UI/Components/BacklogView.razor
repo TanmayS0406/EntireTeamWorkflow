@@ -1,0 +1,193 @@
+@inherits StateComponent
+@using System.Text.Json
+
+<div class="page">
+    @if (State.Project is null)
+    {
+        <div class="empty-card"><h2>No project yet</h2><p>Create a project first, then add its user stories here.</p></div>
+    }
+    else
+    {
+        <div class="page-head">
+            <div>
+                <h2>Backlog</h2>
+                <p>@State.Stories.Count(s => s.Selected) of @State.Stories.Count items will be built in the next run.</p>
+            </div>
+            <div class="btn-row">
+                <button class="btn small" @onclick="() => State.SelectAllStoriesAsync(true)">Select all</button>
+                <button class="btn small" @onclick="() => State.SelectAllStoriesAsync(false)">Select none</button>
+                <label class="check inline"><input type="checkbox" @bind="_includeClosed" /> include closed</label>
+                <button class="btn" disabled="@_importing" @onclick="Import">
+                    <NodeIcon Kind="NodeKind.DeployAzure" Size="16" /> Import from Azure DevOps
+                </button>
+                <button class="btn primary" @onclick="StartNew">+ New story</button>
+            </div>
+        </div>
+
+        <div class="split">
+            <div class="list">
+                <input class="search" type="search" placeholder="Filter stories…" @bind="_filter" @bind:event="oninput" />
+
+                @if (State.Stories.Count == 0)
+                {
+                    <div class="empty-note">
+                        No stories yet. Write one with <b>New story</b>, or connect Azure DevOps on the <a href="javascript:void(0)" @onclick="() => State.Go(Tab.Integrations)">Connect</a> tab and import your backlog.
+                    </div>
+                }
+
+                @foreach (var s in Filtered())
+                {
+                    <div class="story @(_editing?.Id == s.Id ? "active" : "")" @onclick="() => Open(s)">
+                        <input type="checkbox" checked="@s.Selected" title="Include in the next run" @onclick:stopPropagation @onchange="e => Toggle(s, e.Value is true)" />
+                        <span class="type t-@Slug(s.Type)">@Short(s.Type)</span>
+                        <div class="story-main">
+                            <b>@s.Title</b>
+                            <small>
+                                @(s.Source == WorkItemSource.AzureDevOps ? $"#{s.ExternalId} · " : "")@s.State@(string.IsNullOrEmpty(s.IterationPath) ? "" : " · " + s.IterationPath)
+                            </small>
+                        </div>
+                        @if (s.StoryPoints is { } pts) { <span class="pts" title="Story points">@pts</span> }
+                    </div>
+                }
+            </div>
+
+            <div class="detail">
+                @if (_draft is not null)
+                {
+                    <h3>New story</h3>
+                    <label>Title <input type="text" @bind="_draft.Title" @bind:event="oninput" placeholder="As a user I can …" maxlength="250" /></label>
+                    <div class="two-col">
+                        <label>Type
+                            <select @bind="_draft.Type">
+                                @foreach (var t in Types) { <option value="@t">@t</option> }
+                            </select>
+                        </label>
+                        <label>Priority (1 = highest) <input type="number" min="1" max="4" @bind="_draft.Priority" /></label>
+                    </div>
+                    <label>Description <textarea rows="5" @bind="_draft.Description" @bind:event="oninput"></textarea></label>
+                    <label>Acceptance criteria <textarea rows="5" @bind="_draft.AcceptanceCriteria" @bind:event="oninput" placeholder="Given … when … then …"></textarea></label>
+                    <label>Story points <input type="number" step="0.5" min="0" @bind="_draft.StoryPoints" /></label>
+                    @if (CanPushToAzureDevOps)
+                    {
+                        <label class="check"><input type="checkbox" @bind="_draft.PushToAzureDevOps" /> Also create it in Azure DevOps (@State.ProjectAdoOrganization / @State.ProjectAdoProject)</label>
+                    }
+                    <div class="btn-row">
+                        <button class="btn primary" disabled="@string.IsNullOrWhiteSpace(_draft.Title)" @onclick="CreateDraft">Add story</button>
+                        <button class="btn" @onclick="() => _draft = null">Cancel</button>
+                    </div>
+                }
+                else if (_editing is not null)
+                {
+                    <h3>@(_editing.Source == WorkItemSource.AzureDevOps ? $"#{_editing.ExternalId}" : "Story")</h3>
+                    <label>Title <input type="text" @bind="_editing.Title" @bind:event="oninput" maxlength="250" /></label>
+                    <div class="two-col">
+                        <label>Type
+                            <select @bind="_editing.Type">
+                                @foreach (var t in Types.Concat([_editing.Type]).Distinct()) { <option value="@t">@t</option> }
+                            </select>
+                        </label>
+                        <label>Priority <input type="number" min="1" max="4" @bind="_editing.Priority" /></label>
+                    </div>
+                    <label>Description <textarea rows="6" @bind="_editing.Description" @bind:event="oninput"></textarea></label>
+                    <label>Acceptance criteria <textarea rows="6" @bind="_editing.AcceptanceCriteria" @bind:event="oninput"></textarea></label>
+                    <label>Story points <input type="number" step="0.5" min="0" @bind="_editing.StoryPoints" /></label>
+                    @if (_editing.Source == WorkItemSource.AzureDevOps)
+                    {
+                        <p class="help">Imported from Azure DevOps. Edits made here stay in this app and are replaced by the Azure DevOps version at the next import.
+                            @if (!string.IsNullOrEmpty(_editing.ExternalUrl)) { <a href="javascript:void(0)" @onclick="() => State.Shell.OpenUrl(_editing.ExternalUrl)">Open in Azure DevOps</a> }
+                        </p>
+                    }
+                    <div class="btn-row">
+                        <button class="btn primary" disabled="@string.IsNullOrWhiteSpace(_editing.Title)" @onclick="SaveEditing">Save</button>
+                        <button class="btn danger" @onclick="DeleteEditing">Delete</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="empty-note">Select a story to read or edit it. Ticked stories are built in the next run.</div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private static readonly string[] Types = ["User Story", "Product Backlog Item", "Bug", "Task", "Feature", "Epic"];
+
+    private string _filter = "";
+    private bool _includeClosed, _importing;
+    private WorkItemDto? _editing;
+    private CreateWorkItemRequest? _draft;
+
+    private bool CanPushToAzureDevOps =>
+        State.Integrations.AzureDevOps.Connection.Connected
+        && !string.IsNullOrEmpty(State.ProjectAdoOrganization)
+        && !string.IsNullOrEmpty(State.ProjectAdoProject);
+
+    private IEnumerable<WorkItemDto> Filtered() =>
+        State.Stories.Where(s => _filter.Length == 0
+            || s.Title.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+            || (s.ExternalId?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)
+            || s.Type.Contains(_filter, StringComparison.OrdinalIgnoreCase));
+
+    private void Open(WorkItemDto story)
+    {
+        _draft = null;
+        _editing = JsonSerializer.Deserialize<WorkItemDto>(JsonSerializer.Serialize(story, EtwJson.Options), EtwJson.Options);
+    }
+
+    private void StartNew()
+    {
+        _editing = null;
+        _draft = new CreateWorkItemRequest { Priority = 2 };
+    }
+
+    private async Task CreateDraft()
+    {
+        if (_draft is null) return;
+        if (await State.CreateStoryAsync(_draft)) _draft = null;
+    }
+
+    private async Task SaveEditing()
+    {
+        if (_editing is null) return;
+        if (await State.UpdateStoryAsync(_editing)) State.ShowToast("Story saved.");
+    }
+
+    private async Task DeleteEditing()
+    {
+        if (_editing is null) return;
+        if (await State.DeleteStoryAsync(_editing.Id)) _editing = null;
+    }
+
+    private Task Toggle(WorkItemDto story, bool value)
+    {
+        var copy = JsonSerializer.Deserialize<WorkItemDto>(JsonSerializer.Serialize(story, EtwJson.Options), EtwJson.Options)!;
+        copy.Selected = value;
+        return State.UpdateStoryAsync(copy);
+    }
+
+    private async Task Import()
+    {
+        if (!CanPushToAzureDevOps)
+        {
+            State.ShowToast("Connect Azure DevOps and choose an organization and project first.", isError: true);
+            State.Go(Tab.Integrations);
+            return;
+        }
+
+        _importing = true;
+        await State.ImportFromAzureDevOpsAsync(_includeClosed);
+        _importing = false;
+        _editing = null;
+    }
+
+    private static string Slug(string type) => type.Replace(" ", "").ToLowerInvariant();
+
+    private static string Short(string type) => type switch
+    {
+        "User Story" => "Story",
+        "Product Backlog Item" => "PBI",
+        _ => type,
+    };
+}
